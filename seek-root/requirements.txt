@@ -1,0 +1,18 @@
+# Seek Root - 面向业务人员的因果推断Web应用
+
+dash>=2.17
+dash-mantine-components>=0.14
+polars>=1.0
+dowhy[econml,plotting]>=0.14
+econml>=0.16
+plotly>=5.18
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3
+statsmodels>=0.14
+openai>=1.0
+click>=8.1
+python-dotenv>=1.0
+pyarrow>=14.0
+jinja2>=3.1
+weasyprint>=60.0

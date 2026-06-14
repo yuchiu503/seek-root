@@ -1,0 +1,7 @@
+# 额外资源文件声明
+# 确保静态资源和模板文件被正确打包
+recursive-include seek_root/assets *
+recursive-include seek_root/templates *
+global-exclude __pycache__
+global-exclude *.pyc
+global-exclude *.pyo
