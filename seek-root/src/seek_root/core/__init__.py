@@ -9,6 +9,12 @@ BaseCausalAnalyzer 基类，确保了对外API的一致性和可扩展性。
 - RD: 断点回归 (Regression Discontinuity)
 - IV: 工具变量法 (Instrumental Variables)
 - CausalForest: 因果森林 (Causal Forest)
+
+所有方法均使用纯 Python 实现，依赖:
+- numpy: 数值计算
+- scikit-learn: 机器学习模型
+- statsmodels: 统计推断
+- polars: 数据处理
 """
 
 from seek_root.core.base import (

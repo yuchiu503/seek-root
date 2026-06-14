@@ -3,8 +3,6 @@
 dash>=2.17
 dash-mantine-components>=0.14
 polars>=1.0
-dowhy[econml,plotting]>=0.14
-econml>=0.16
 plotly>=5.18
 pandas>=2.0
 numpy>=1.24

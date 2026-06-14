@@ -1,224 +1,214 @@
-"""数据上传页面模块。
+"""数据上传页面。
 
-提供数据文件上传和数据预览功能。
+提供文件上传、数据预览和数据质量检查。
 """
 
-import dash
 import dash_mantine_components as dmc
-from dash import html, dcc, callback, Output, Input, State, register_page
-import polars as pl
+from dash import html, dcc, callback, Output, Input, State
 import base64
 import io
-
-from seek_root.data.loader import DataLoader
-from seek_root.data.validator import DataValidator
-
-dash.register_page(__name__, path="/data", title="上传数据")
+import polars as pl
 
 
-def parse_contents(contents: str, filename: str) -> tuple:
-    """解析上传的文件内容。
-
-    参数:
-        contents: 文件内容（base64编码）
-        filename: 文件名
+def render_data_page():
+    """渲染数据上传页面内容。
 
     返回:
-        tuple: (数据DataFrame, 列信息, 文件名)
-    """
-    content_type, content_string = contents.split(",")
-    decoded = base64.b64decode(content_string)
-
-    loader = DataLoader(content=decoded, file_path=filename)
-    df = loader.load()
-
-    return df, loader.get_column_info(), filename
-
-
-def layout():
-    """数据上传页面布局。
-
-    返回:
-        html.Div: 数据上传页面组件
+        html.Div: 页面内容
     """
     return html.Div(
         style={"maxWidth": "1000px", "margin": "0 auto", "padding": "20px"},
         children=[
-            # 页面标题
             dmc.Title("上传数据", order=1, mb="md"),
-            dmc.Text(
-                "拖拽或点击上传您的数据文件，支持 Excel (.xlsx, .xls) 和 CSV 格式。",
-                c="dimmed",
-                mb="xl",
-            ),
+            dmc.Text("支持CSV和Excel文件上传，建议小于50MB。", size="sm", c="dimmed", mb="md"),
+
             # 上传区域
-            dcc.Upload(
-                id="upload-data",
+            dmc.Paper(
+                p="xl",
+                shadow="md",
+                radius="md",
                 children=[
-                    dmc.Paper(
-                        shadow="md",
-                        p="xl",
-                        radius="md",
-                        style={
-                            "border": "2px dashed #10b981",
-                            "textAlign": "center",
-                            "cursor": "pointer",
-                            "backgroundColor": "#f0fdf4",
-                        },
+                    dcc.Upload(
+                        id="data-upload",
                         children=[
-                            dmc.ThemeIcon(
-                                "📁",
-                                size=60,
-                                variant="transparent",
-                            ),
-                            dmc.Text(
-                                "将文件拖拽到此处，或点击选择文件",
-                                size="lg",
-                                weight=500,
-                                mt="md",
-                            ),
-                            dmc.Text(
-                                "支持 .xlsx, .xls, .csv 格式",
-                                size="sm",
-                                c="dimmed",
-                                mt="sm",
-                            ),
+                            html.Div(
+                                style={
+                                    "border": "2px dashed #10b981",
+                                    "borderRadius": "8px",
+                                    "padding": "40px 20px",
+                                    "textAlign": "center",
+                                    "cursor": "pointer",
+                                    "backgroundColor": "#f0fdf4",
+                                },
+                                children=[
+                                    dmc.Text("拖拽文件到此处，或点击选择文件", size="lg", c="#064e3b"),
+                                    html.Br(),
+                                    dmc.Text("支持 CSV、XLSX、XLS 格式", size="sm", c="dimmed"),
+                                ],
+                            )
                         ],
+                        multiple=False,
+                        accept=".csv,.xlsx,.xls",
                     ),
                 ],
-                accept=".csv,.xlsx,.xls",
-                max_size=10 * 1024 * 1024,  # 10MB
+                mb="xl",
             ),
+
+            # 上传状态显示
+            html.Div(id="data-upload-status"),
+
             # 数据预览区域
-            html.Div(id="output-data-upload", style={"marginTop": "30px"}),
-            # 数据信息存储
-            dcc.Store(id="data-info-store"),
+            html.Div(id="data-preview-area", style={"marginTop": "20px"}),
+
+            # 列选择区域
+            html.Div(id="column-selector-area"),
         ],
     )
 
 
+# 回调
 @callback(
-    Output("output-data-upload", "children"),
-    Output("data-info-store", "data"),
-    Input("upload-data", "contents"),
-    State("upload-data", "filename"),
-    State("upload-data", "last_modified"),
+    Output("data-upload-status", "children"),
+    Output("data-preview-area", "children"),
+    Output("current-page", "data", allow_duplicate=True),
+    Input("data-upload", "contents"),
+    State("data-upload", "filename"),
+    State("app-data-store", "data"),
+    prevent_initial_call=True,
 )
-def update_output(contents, filename, last_modified):
-    """处理文件上传并显示预览。
+def handle_file_upload(contents, filename, store_data):
+    """处理文件上传。
 
     参数:
-        contents: 文件内容
+        contents: 上传的文件内容（base64编码）
         filename: 文件名
-        last_modified: 最后修改时间
+        store_data: 当前存储的数据
 
     返回:
-        tuple: (预览组件, 数据信息)
+        tuple: (状态显示, 预览区域, 更新的存储)
     """
     if contents is None:
-        return html.Div(), None
+        return html.Div(), html.Div(), store_data
 
     try:
-        # 解析文件
-        df, column_info, fname = parse_contents(contents, filename)
+        # 解析文件内容
+        content_type, content_string = contents.split(",")
+        decoded = base64.b64decode(content_string)
+        file_data = io.BytesIO(decoded)
 
-        # 数据预览表格
-        preview_df = df.head(10)
+        # 读取数据
+        if filename.endswith(".csv"):
+            df = pl.read_csv(file_data)
+        elif filename.endswith(".xlsx") or filename.endswith(".xls"):
+            df = pl.read_excel(file_data)
+        else:
+            return (
+                dmc.Alert("不支持的文件格式！", color="red", title="错误"),
+                html.Div(),
+                store_data,
+            )
 
-        # 构建预览组件
-        children = [
-            dmc.Title(f"数据预览 - {fname}", order=3, mt="xl", mb="md"),
-            dmc.Alert(
-                f"成功加载 {df.height:,} 行 × {len(df.columns)} 列 数据",
-                color="green",
-                title="加载成功",
-                mb="md",
-            ),
-            # 数据预览表格
-            dmc.Paper(
-                shadow="sm",
-                p="md",
-                radius="md",
-                style={"overflowX": "auto"},
-                children=[
-                    dmc.Table(
-                        children=[
-                            # 表头
-                            html.Thead(
-                                html.Tr(
-                                    [
-                                        html.Th(col) for col in preview_df.columns
-                                    ]
-                                )
-                            ),
-                            # 表体
-                            html.Tbody(
-                                [
+        # 生成预览
+        preview = dmc.Paper(
+            p="lg",
+            shadow="md",
+            radius="md",
+            children=[
+                dmc.Title("数据预览", order=3, mb="md"),
+                dmc.Group(
+                    children=[
+                        dmc.Stack(
+                            children=[
+                                dmc.Text("样本量", size="sm", c="dimmed"),
+                                dmc.Text(str(len(df)), fw=700)),
+                            ],
+                            align="center",
+                            gap=2,
+                        ),
+                        dmc.Stack(
+                            children=[
+                                dmc.Text("列数", size="sm", c="dimmed"),
+                                dmc.Text(str(len(df.columns)), fw=700),
+                            ],
+                            align="center",
+                            gap=2,
+                        ),
+                        dmc.Stack(
+                            children=[
+                                dmc.Text("数据类型", size="sm", c="dimmed"),
+                                dmc.Text(str(df.schema).__name__, fw=700),
+                            ],
+                            align="center",
+                            gap=2,
+                        ),
+                    ],
+                    justify="space-around",
+                ),
+                html.Br(),
+                html.Div(
+                    style={"overflow": "auto", "maxHeight": "400px", "border": "1px solid #e5e7eb", "borderRadius": "8px"},
+                    children=[
+                        html.Table(
+                            style={"width": "100%", "borderCollapse": "collapse"},
+                            children=[
+                                html.Thead(
                                     html.Tr(
-                                        [
-                                            html.Td(str(val)[:50])  # 限制显示长度
-                                            for val in row
-                                        ]
+                                        [html.Th(col, style={"border": "1px solid #e5e7eb", "background": "#f9fafb", "padding": "8px", "textAlign": "left"}) for col in df.columns]
                                     )
-                                    for row in preview_df.rows()
-                                ]
-                            ),
-                        ],
-                        striped=True,
-                        highlightOnHover=True,
-                    ),
-                ],
-            ),
-            # 列信息
-            dmc.Title("数据列信息", order=3, mt="xl", mb="md"),
-            dmc.SimpleGrid(
-                cols=3,
-                children=[
-                    dmc.Card(
-                        shadow="sm",
-                        padding="md",
-                        radius="md",
-                        children=[
-                            dmc.Text(col_info["name"], weight=700),
-                            dmc.Text(f"类型: {col_info['dtype']}", size="sm", c="dimmed"),
-                            dmc.Text(f"缺失值: {col_info['null_count']}", size="sm", c="dimmed"),
-                            dmc.Text(f"唯一值: {col_info['unique_count']}", size="sm", c="dimmed"),
-                        ],
-                    )
-                    for col_info in column_info
-                ],
-            ),
-            # 下一步按钮
-            dmc.Group(
-                children=[
-                    dmc.Button(
-                        "进入分析",
-                        size="lg",
-                        variant="filled",
-                        color="green",
-                        leftSection="🔬",
-                        href="/analysis",
-                    ),
-                ],
-                mt="xl",
-                justify="center",
-            ),
-        ]
+                                ),
+                                html.Tbody(
+                                    [
+                                        html.Tr(
+                                            [html.Td(str(row[i]) for i in range(len(row))],
+                                            style={"border": "1px solid #e5e7eb", "padding": "8px"},
+                                        ) for row in df.head(10).rows()
+                                    ]
+                                ),
+                            ],
+                        )
+                    ],
+                ),
+                html.Br(),
+                dmc.Group(
+                    [
+                        dmc.Button("继续分析", id="go-to-analysis", color="green", size="lg"),
+                        dmc.Text("共 " + str(len(df)) + " 行数据，显示前10行", size="sm", c="dimmed"),
+                    ],
+                    justify="space-between",
+                ),
+            ],
+        )
 
-        # 数据信息
-        data_info = {
-            "filename": fname,
-            "row_count": df.height,
-            "column_count": len(df.columns),
+        status = dmc.Alert(
+            "文件上传成功！", color="green", title="成功",
+        )
+
+        # 存储数据（转换为JSON格式）
+        new_store = {
+            "filename": filename,
             "columns": df.columns,
-            "column_info": column_info,
+            "dtypes": {col: str(dtype) for col, dtype in df.schema.items()},
+            "shape": (df.shape[0], df.shape[1]),
         }
 
-        return children, data_info
+        return status, preview, new_store
 
     except Exception as e:
-        return dmc.Alert(
-            f"加载数据失败: {str(e)}",
-            color="red",
-            title="错误",
-        ), None
+        return (
+            dmc.Alert(f"上传失败: {str(e)}", color="red", title="错误"),
+            html.Div(),
+            store_data,
+        )
+
+
+# 导航按钮
+@callback(
+    Output("current-page", "data"),
+    Input("go-to-analysis", "n_clicks"),
+    prevent_initial_call=True,
+)
+def go_to_analysis(n_clicks):
+    """导航到分析页面。"""
+    if n_clicks:
+        return "analysis"
+    return dash.no_update

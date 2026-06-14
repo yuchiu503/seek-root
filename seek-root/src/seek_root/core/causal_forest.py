@@ -1,37 +1,35 @@
 """因果森林（Causal Forest）分析器模块。
 
-因果森林是一种基于随机森林的异质性处理效应（HTE）估计方法。
-它允许处理效应在不同样本之间存在差异，
-并通过机器学习的方法来识别哪些样本更受益于处理。
+因果森林是一种基于机器学习的异质性处理效应估计方法。
+它通过随机森林的方式估计每个样本的条件平均处理效应（CATE）。
 
 原理:
-    因果森林是随机森林的一种扩展，
-    通过构建多棵因果树并进行集成，
-    估计每个样本的个体化处理效应（CATE - Conditional Average Treatment Effect）。
-
+    条件平均处理效应:
     CATE(x) = E[Y(1) - Y(0) | X = x]
 
-    核心思想：
-    1. 在每棵树的每个叶节点内，计算处理组和对照组之间的平均结果差异
-    2. 通过诚实估计（honest estimation）减少过拟合
-    3. 通过集成多棵树来降低方差
+    因果森林的核心思想:
+    1. 对每个样本构建"伪结果"（pseudo-outcome）
+    2. 使用随机森林在协变量空间上预测 CATE
+    3. 通过分裂准则（如最大化处理效应的异质性）来构建树
+
+    简化实现:
+    1. 估计倾向得分 p(X) = P(T=1|X)
+    2. 估计条件均值 m(X) = E[Y|X]
+    3. 计算伪结果: Y_i^* = (T_i - p(X_i)) * (Y_i - m(X_i)) / (p(X_i) * (1 - p(X_i)))
+    4. 使用回归树或随机森林预测 CATE(X) = E[Y*|X]
 
 适用场景:
-    - 精准营销：识别哪些客户更可能响应营销活动
-    - 医疗个性化：识别哪些患者更受益于特定治疗
-    - 政策 Targeting：识别政策的最优目标群体
-    - 客户分层：基于异质性效应进行客户细分
-
-参考文献:
-    - Athey, S., & Imbens, G. (2016). Recursive partitioning for heterogeneous causal effects
-    - Wager, S., & Athey, S. (2018). Estimation and inference of heterogeneous treatment effects
+    - 个性化推荐和定价策略
+    - 靶向营销和客户分层
+    - 医疗决策的个体化治疗方案
+    - 政策效果的异质性分析
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
 import polars as pl
 import pandas as pd
 import numpy as np
-from dataclasses import dataclass, field
 
 from seek_root.core.base import (
     BaseCausalAnalyzer,
@@ -43,70 +41,57 @@ from seek_root.core.base import (
 
 @dataclass
 class CausalForestConfig:
-    """因果森林配置数据类。
+    """CausalForest分析配置数据类。
 
-    用于存储和验证因果森林分析的参数配置。
-
-    属性:
-        treatment_col: 处理组标识列名（值为0/1）
+    参数:
+        treatment_col: 处理变量列名
         outcome_col: 结果变量列名
-        covariates: 协变量列名列表（用于分裂和估计异质性效应）
+        covariates: 协变量列名列表
         n_estimators: 树的数量（默认100）
-        max_depth: 最大深度（默认5）
-        min_samples_leaf: 叶节点最小样本数（默认10）
-        subsample_ratio: 子采样比例（默认1.0，使用全部样本）
-        random_state: 随机种子（默认42）
+        max_depth: 最大深度（默认6）
+        min_samples_split: 最小分裂样本数（默认5）
+        random_state: 随机种子
     """
 
     treatment_col: str
     outcome_col: str
     covariates: List[str]
     n_estimators: int = 100
-    max_depth: int = 5
-    min_samples_leaf: int = 10
-    subsample_ratio: float = 1.0
+    max_depth: int = 6
+    min_samples_split: int = 5
     random_state: int = 42
 
 
 class CausalForestAnalyzer(BaseCausalAnalyzer):
     """因果森林分析器。
 
-    使用因果森林估计异质性处理效应，
-    识别哪些样本更受益于处理。
+    使用简化的因果森林实现，基于AIPW估计器。
 
     参数:
-        data (pl.DataFrame): Polars DataFrame，包含分析所需的全部列
-        config (Dict[str, Any]): 分析配置，包含:
-            - treatment_col: 处理组标识列名
-            - outcome_col: 结果变量列名
-            - covariates: 协变量列表
-            - n_estimators: 树的数量
-            - max_depth: 最大深度
-            - min_samples_leaf: 叶节点最小样本数
+        data (pl.DataFrame): Polars DataFrame
+        config (Dict[str, Any]): 配置字典
 
     示例:
         >>> df = pl.DataFrame({
-        ...     "is_treated": [0,0,1,1,0,0,1,1],
+        ...     "treated": [0,0,1,1,0,0,1,1],
         ...     "age": [25,30,35,40,28,32,38,42],
-        ...     "income": [5000,6000,5500,7000,5200,6100,5600,7200],
+        ...     "income": [50,60,55,70,52,61,56,72],
         ...     "outcome": [100,110,130,150,105,115,135,155]
         ... })
         >>> analyzer = CausalForestAnalyzer(data=df, config={
-        ...     "treatment_col": "is_treated",
+        ...     "treatment_col": "treated",
         ...     "outcome_col": "outcome",
         ...     "covariates": ["age", "income"]
         ... })
         >>> analyzer.fit()
-        >>> result = analyzer.get_result()
-        >>> cate_scores = result.metadata["cate_scores"]
     """
 
     def __init__(self, data: pl.DataFrame, config: Dict[str, Any]) -> None:
-        """初始化因果森林分析器。
+        """初始化CausalForest分析器。
 
         参数:
-            data: 输入的Polars DataFrame数据
-            config: 分析配置字典
+            data: 输入数据
+            config: 配置字典
         """
         super().__init__(data, config)
         self.config = CausalForestConfig(
@@ -114,18 +99,13 @@ class CausalForestAnalyzer(BaseCausalAnalyzer):
             outcome_col=config["outcome_col"],
             covariates=config["covariates"],
             n_estimators=config.get("n_estimators", 100),
-            max_depth=config.get("max_depth", 5),
-            min_samples_leaf=config.get("min_samples_leaf", 10),
-            subsample_ratio=config.get("subsample_ratio", 1.0),
+            max_depth=config.get("max_depth", 6),
+            min_samples_split=config.get("min_samples_split", 5),
             random_state=config.get("random_state", 42),
         )
-        self._forest: Optional[Any] = None
-        self._cate_scores: Optional[np.ndarray] = None
 
-    def validate_config(self) -> tuple[bool, Optional[str]]:
-        """验证因果森林配置是否有效。
-
-        检查必需列是否存在，以及样本量是否足够。
+    def validate_config(self) -> Tuple[bool, Optional[str]]:
+        """验证CausalForest配置是否有效。
 
         返回:
             tuple: (是否有效, 错误消息)
@@ -135,253 +115,176 @@ class CausalForestAnalyzer(BaseCausalAnalyzer):
         if not valid:
             return False, msg
 
-        # 检查样本量
-        n = self.data.height
-        if n < 50:
-            return False, f"样本量不足（当前{n}，因果森林建议至少50个样本）"
+        T = self.data[self.config.treatment_col].to_numpy()
+        n_treated = np.sum(T == 1)
+        n_control = np.sum(T == 0)
 
-        # 检查处理组和对照组样本量
-        treatment_n = self.data.filter(pl.col(self.config.treatment_col) == 1).height
-        control_n = self.data.filter(pl.col(self.config.treatment_col) == 0).height
-
-        if treatment_n < 10:
-            return False, f"处理组样本量不足（当前{treatment_n}，建议至少10个）"
-        if control_n < 10:
-            return False, f"对照组样本量不足（当前{control_n}，建议至少10个）"
-
-        # 检查协变量是否有变异
-        for cov in self.config.covariates:
-            unique_vals = self.data[cov].n_unique()
-            if unique_vals < 2:
-                return False, f"协变量 {cov} 缺乏变异"
+        if n_treated < 5:
+            return False, f"处理组样本量不足（当前{n_treated}，建议至少5个）"
+        if n_control < 5:
+            return False, f"对照组样本量不足（当前{n_control}，建议至少5个）"
 
         return True, None
 
     def fit(self) -> None:
-        """执行因果森林估计。
+        """执行CausalForest估计。
 
-        使用因果森林算法估计每个样本的个体化处理效应（CATE）。
-
-        方法:
-            使用EconML的CausalForest或手动实现：
-            1. 构建多棵因果树
-            2. 每棵树使用诚实估计（honest estimation）
-            3. 集成多棵树的预测作为最终CATE估计
+        使用简化的AIPW（Augmented Inverse Probability Weighting）方法，
+        结合随机森林估计异质性处理效应。
 
         返回:
             None: 结果存入 self._result 属性
         """
-        # 验证配置
+        from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+        from scipy import stats
+
         valid, msg = self.validate_config()
         if not valid:
             raise ValueError(f"配置验证失败: {msg}")
 
-        # 获取配置
-        treatment = self.config.treatment_col
-        outcome = self.config.outcome_col
-        covariates = self.config.covariates
+        T = self.config.treatment_col
+        Y = self.config.outcome_col
+        X_cols = self.config.covariates
 
-        # 转换为Pandas
-        df = self._convert_to_pandas()
+        df = self.data.to_pandas()
 
-        # 准备数据
-        X = df[covariates].values
-        T = df[treatment].values
-        Y = df[outcome].values
+        X = df[X_cols].values
+        treatment = df[T].values
+        outcome = df[Y].values
 
-        # 尝试使用EconML的CausalForest
-        try:
-            from econml.dml import CausalForestDML
-
-            # 使用EconML的因果森林
-            cf = CausalForestDML(
-                n_estimators=self.config.n_estimators,
-                max_depth=self.config.max_depth,
-                min_samples_leaf=self.config.min_samples_leaf,
-                random_state=self.config.random_state,
-                propensity_model="logistic",
-            )
-
-            cf.fit(Y, T, X=X, W=None)
-
-            # 估计CATE
-            cate_scores = cf.const_marginal_ate_inference(X)
-            ate = cate_scores.mean()
-            std_err = cate_scores.std()
-
-            self._cate_scores = cate_scores
-            self._forest = cf
-
-        except ImportError:
-            # 如果EconML不可用，使用简化实现
-            ate, std_err, cate_scores = self._manual_causal_forest(X, T, Y)
-
-        # 计算统计显著性
-        conf_int = (ate - 1.96 * std_err, ate + 1.96 * std_err)
-        is_significant = (conf_int[0] > 0) or (conf_int[1] < 0)
-
-        # 处理组和对照组样本量
-        treatment_n = int(T.sum())
-        control_n = len(T) - treatment_n
-
-        # 计算异质性统计
-        heterogeneity = self._calculate_heterogeneity(cate_scores)
-
-        # 生成诊断图表
-        diagnostic_plots = self._generate_diagnostic_plots(
-            df, X, T, Y, cate_scores, covariates
+        # 1. 估计倾向得分 p(X) = P(T=1|X)
+        ps_model = RandomForestClassifier(
+            n_estimators=self.config.n_estimators // 2,
+            max_depth=self.config.max_depth,
+            random_state=self.config.random_state,
+            min_samples_split=self.config.min_samples_split,
         )
+        ps_model.fit(X, treatment)
+        propensity_scores = ps_model.predict_proba(X)[:, 1]
 
-        # 构建结果
+        # 确保倾向得分不过于接近0或1
+        propensity_scores = np.clip(propensity_scores, 0.05, 0.95)
+
+        # 2. 估计条件均值 m(X) = E[Y|X,T=t]
+        # 对处理组和对照组分别建模
+        treated_mask = treatment == 1
+        control_mask = treatment == 0
+
+        # 处理组模型
+        if np.sum(treated_mask) > 5:
+            m1_model = RandomForestRegressor(
+                n_estimators=self.config.n_estimators // 2,
+                max_depth=self.config.max_depth,
+                random_state=self.config.random_state,
+                min_samples_split=self.config.min_samples_split,
+            )
+            m1_model.fit(X[treated_mask], outcome[treated_mask])
+            m1_hat = m1_model.predict(X)
+        else:
+            m1_hat = np.mean(outcome[treated_mask]) * np.ones(len(df))
+
+        # 对照组模型
+        if np.sum(control_mask) > 5:
+            m0_model = RandomForestRegressor(
+                n_estimators=self.config.n_estimators // 2,
+                max_depth=self.config.max_depth,
+                random_state=self.config.random_state,
+                min_samples_split=self.config.min_samples_split,
+            )
+            m0_model.fit(X[control_mask], outcome[control_mask])
+            m0_hat = m0_model.predict(X)
+        else:
+            m0_hat = np.mean(outcome[control_mask]) * np.ones(len(df))
+
+        # 3. 计算伪结果（AIPW score）
+        # 正确的个体处理效应估计:
+        # τ_i(x) = m1(x) - m0(x) + T*(Y-m1)/p - (1-T)*(Y-m0)/(1-p)
+        pseudo_outcomes = np.zeros(len(df))
+        for i in range(len(df)):
+            if treatment[i] == 1:
+                # 处理组: 使用 p(X_i)
+                pseudo_outcomes[i] = (m1_hat[i] - m0_hat[i]
+                                    + (outcome[i] - m1_hat[i]) / propensity_scores[i])
+            else:
+                # 对照组: 使用 1-p(X_i)
+                pseudo_outcomes[i] = (m1_hat[i] - m0_hat[i]
+                                    - (outcome[i] - m0_hat[i]) / (1 - propensity_scores[i]))
+
+        # 4. 使用随机森林预测 CATE(X) = E[Y*|X]
+        cate_model = RandomForestRegressor(
+            n_estimators=self.config.n_estimators,
+            max_depth=self.config.max_depth,
+            random_state=self.config.random_state,
+            min_samples_split=self.config.min_samples_split,
+        )
+        cate_model.fit(X, pseudo_outcomes)
+        cate_pred = cate_model.predict(X)
+
+        # 5. 汇总统计
+        tau = np.mean(cate_pred)
+        tau_std = np.std(cate_pred)
+        tau_se = tau_std / np.sqrt(len(df))
+
+        t_stat = tau / tau_se
+        p_value = 2 * stats.norm.sf(abs(t_stat))
+
+        is_significant = p_value < 0.05
+
+        ci_lower = tau - 1.96 * tau_se
+        ci_upper = tau + 1.96 * tau_se
+
+        # 6. 诊断图表
+        diagnostic_plots = self._generate_diagnostic_plots(df, cate_pred, treatment, outcome, X_cols)
+
         self._result = AnalysisResult(
             method=CausalMethod.CAUSAL_FOREST,
-            effect_estimate=float(ate),
-            confidence_interval=(float(conf_int[0]), float(conf_int[1])),
-            p_value=0.05,  # 简化处理
-            standard_error=float(std_err),
+            effect_estimate=float(tau),
+            confidence_interval=(float(ci_lower), float(ci_upper)),
+            p_value=float(p_value),
+            standard_error=float(tau_se),
             sample_size=len(df),
-            treatment_size=treatment_n,
-            control_size=control_n,
+            treatment_size=int(treatment.sum()),
+            control_size=int((1 - treatment).sum()),
             is_significant=is_significant,
             diagnostic_plots=diagnostic_plots,
             metadata={
-                "ate": float(ate),
-                "cate_scores": cate_scores.tolist(),
-                "heterogeneity": heterogeneity,
-                "n_estimators": self.config.n_estimators,
-                "covariates": covariates,
+                "tau": float(tau),
+                "tau_std": float(tau_std),
+                "cate_distribution": self._get_cate_distribution(cate_pred),
+                "covariates": X_cols,
+                "individual_effects": cate_pred.tolist()[:50],  # 取前50个样本的个体效应
             },
         )
-
         self._is_fitted = True
 
-    def _manual_causal_forest(
-        self,
-        X: np.ndarray,
-        T: np.ndarray,
-        Y: np.ndarray,
-    ) -> tuple[float, float, np.ndarray]:
-        """手动实现简化版因果森林。
-
-        当EconML不可用时的备选实现。
-        使用基于决策树的简化方法估计CATE。
+    def _get_cate_distribution(self, cate_pred: np.ndarray) -> Dict[str, float]:
+        """获取CATE分布统计量。
 
         参数:
-            X: 协变量矩阵
-            T: 处理变量数组
-            Y: 结果变量数组
+            cate_pred: 条件平均处理效应预测值
 
         返回:
-            tuple: (ATE, 标准误, CATE分数数组)
-        """
-        from sklearn.tree import DecisionTreeRegressor
-
-        n = len(Y)
-        cate_scores = np.zeros(n)
-
-        # 使用 Honest Tree 方法
-        # 样本分裂：用于分裂的样本 和 用于估计的样本
-        n_subsample = int(n * self.config.subsample_ratio)
-        indices = np.random.RandomState(self.config.random_state).permutation(n)
-        split_indices = indices[:n_subsample]
-        estimate_indices = indices[n_subsample:]
-
-        if len(estimate_indices) < 10:
-            estimate_indices = indices  # 回退到使用全部样本
-
-        # 构建多棵树
-        trees = []
-        for i in range(self.config.n_estimators):
-            # Bootstrap 采样
-            boot_indices = np.random.RandomState(
-                self.config.random_state + i
-            ).choice(split_indices, size=len(split_indices), replace=True)
-
-            X_boot = X[boot_indices]
-            T_boot = T[boot_indices]
-            Y_boot = Y[boot_indices]
-
-            # 构建因果树
-            # 使用双机器学习：先拟合倾向得分，再拟合残差
-            from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-
-            # 倾向得分模型
-            propensity_model = DecisionTreeClassifier(
-                max_depth=3,
-                min_samples_leaf=10,
-                random_state=self.config.random_state + i,
-            )
-            propensity_model.fit(X_boot, T_boot)
-            e_x = propensity_model.predict_proba(X)[:, 1]
-            e_x = np.clip(e_x, 0.1, 0.9)  # 裁剪避免极端值
-
-            # 结果模型（IPW变体）
-            # 对于处理组：Y/e(X)
-            # 对于对照组：Y/(1-e(X))
-            sample_weight_t = T_boot / e_x[boot_indices]
-            sample_weight_c = (1 - T_boot) / (1 - e_x[boot_indices])
-
-            # 简化：直接使用决策树分裂
-            tree = DecisionTreeRegressor(
-                max_depth=self.config.max_depth,
-                min_samples_leaf=self.config.min_samples_leaf,
-                random_state=self.config.random_state + i,
-            )
-            tree.fit(X_boot, Y_boot, sample_weight=T_boot * 2 - 1)  # 使用处理指示符作为权重
-
-            trees.append(tree)
-
-        # 集成预测
-        for tree in trees:
-            cate_scores += tree.predict(X) / self.config.n_estimators
-
-        # 计算ATE和标准误
-        ate = cate_scores.mean()
-        std_err = cate_scores.std() / np.sqrt(n)
-
-        return ate, std_err, cate_scores
-
-    def _calculate_heterogeneity(self, cate_scores: np.ndarray) -> Dict[str, float]:
-        """计算处理效应异质性统计量。
-
-        分析不同样本之间的处理效应差异程度。
-
-        参数:
-            cate_scores: CATE分数数组
-
-        返回:
-            Dict[str, float]: 异质性统计量
+            dict: 分布统计量
         """
         return {
-            "mean": float(np.mean(cate_scores)),
-            "std": float(np.std(cate_scores)),
-            "min": float(np.min(cate_scores)),
-            "max": float(np.max(cate_scores)),
-            "q25": float(np.percentile(cate_scores, 25)),
-            "q50": float(np.percentile(cate_scores, 50)),
-            "q75": float(np.percentile(cate_scores, 75)),
+            "mean": float(np.mean(cate_pred)),
+            "std": float(np.std(cate_pred)),
+            "min": float(np.min(cate_pred)),
+            "max": float(np.max(cate_pred)),
+            "q25": float(np.percentile(cate_pred, 25)),
+            "q50": float(np.percentile(cate_pred, 50)),
+            "q75": float(np.percentile(cate_pred, 75)),
         }
 
     def _generate_diagnostic_plots(
         self,
         df: pd.DataFrame,
-        X: np.ndarray,
-        T: np.ndarray,
-        Y: np.ndarray,
-        cate_scores: np.ndarray,
-        covariate_names: List[str],
+        cate_pred: np.ndarray,
+        treatment: np.ndarray,
+        outcome: np.ndarray,
+        X_cols: List[str],
     ) -> List[DiagnosticPlot]:
-        """生成因果森林诊断图表。
-
-        生成CATE分布图、异质性分析图等。
-
-        参数:
-            df: Pandas DataFrame
-            X: 协变量矩阵
-            T: 处理变量数组
-            Y: 结果变量数组
-            cate_scores: CATE分数数组
-            covariate_names: 协变量名称列表
+        """生成CausalForest诊断图表。
 
         返回:
             List[DiagnosticPlot]: 诊断图表列表
@@ -389,124 +292,91 @@ class CausalForestAnalyzer(BaseCausalAnalyzer):
         plots = []
 
         # 1. CATE分布直方图
-        cate_hist = np.histogram(cate_scores, bins=20)
+        n_bins = 15
+        hist, bin_edges = np.histogram(cate_pred, bins=n_bins)
 
-        cate_distribution_data = {
-            "xAxis": {"type": "value", "name": "个体处理效应 (CATE)"},
-            "yAxis": {"type": "value", "name": "样本数量"},
+        cate_hist_data = {
+            "title": {"text": "条件平均处理效应分布"},
+            "xAxis": {
+                "type": "category",
+                "data": [f"{bin_edges[i]:.2f}" for i in range(n_bins)],
+                "name": "CATE值",
+            },
+            "yAxis": {"type": "value", "name": "样本数"},
             "series": [
                 {
-                    "name": "CATE分布",
+                    "name": "样本数",
                     "type": "bar",
-                    "data": [[float(cate_hist[1][i]), float(cate_hist[0][i])]
-                             for i in range(len(cate_hist[0]))],
-                    "itemStyle": {"color": "#10b981"},
+                    "data": [int(h) for h in hist],
+                    "itemStyle": {"color": "#8b5cf6"},
+                    "label": {"show": True, "position": "top"},
                 },
             ],
-            "markLine": {
-                "data": [
-                    {"xAxis": float(np.mean(cate_scores)), "name": "平均效应"},
-                ],
-                "lineStyle": {"color": "#ef4444", "type": "dashed"},
-            },
         }
         plots.append(DiagnosticPlot(
             name="CATE分布",
             chart_type="bar",
-            data=cate_distribution_data,
-            title="个体处理效应分布",
-            description="展示每个样本的估计处理效应分布。分布越宽，表示异质性越大。",
+            data=cate_hist_data,
+            title="条件平均处理效应分布",
+            description="展示每个样本的条件平均处理效应分布，反映处理效应的异质性。",
         ))
 
-        # 2. 协变量与CATE的关系（选择最重要的2个协变量）
-        # 简化：使用前两个协变量
-        n_cov = min(2, X.shape[1])
-
-        for i in range(n_cov):
-            cov_values = X[:, i]
-            cov_name = covariate_names[i] if i < len(covariate_names) else f"协变量{i}"
-
-            # 分箱计算各组的平均CATE
-            n_bins = 5
-            bin_edges = np.percentile(cov_values, np.linspace(0, 100, n_bins + 1))
-            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-
-            bin_cates = []
-            for j in range(n_bins):
-                mask = (cov_values >= bin_edges[j]) & (cov_values < bin_edges[j + 1])
-                if j == n_bins - 1:
-                    mask = (cov_values >= bin_edges[j]) & (cov_values <= bin_edges[j + 1])
-                bin_cates.append(float(np.mean(cate_scores[mask])))
-
-            covariate_effect_data = {
-                "xAxis": {"type": "value", "name": cov_name},
-                "yAxis": {"type": "value", "name": "平均CATE"},
+        # 2. 个体效应 vs 协变量（取第一个协变量）
+        if len(X_cols) > 0:
+            x_col = X_cols[0]
+            scatter_data = {
+                "title": {"text": f"CATE vs {x_col}"},
+                "xAxis": {"type": "value", "name": x_col},
+                "yAxis": {"type": "value", "name": "CATE"},
                 "series": [
                     {
-                        "name": "异质性效应",
-                        "type": "line",
-                        "data": [[float(bin_centers[i]), bin_cates[i]]
-                                 for i in range(n_bins)],
-                        "lineStyle": {"color": "#10b981"},
-                        "areaStyle": {"color": "rgba(16,185,129,0.2)"},
+                        "type": "scatter",
+                        "data": [
+                            [float(x), float(y)]
+                            for x, y in zip(df[x_col], cate_pred)
+                        ],
+                        "itemStyle": {"color": "#3b82f6"},
                     },
                 ],
             }
             plots.append(DiagnosticPlot(
-                name=f"CATE与{cov_name}关系",
-                chart_type="line",
-                data=covariate_effect_data,
-                title=f"异质性效应：{cov_name}",
-                description=f"展示{cov_name}与处理效应的关系。趋势越明显，说明该变量的异质性越大。",
+                name="CATE vs 协变量",
+                chart_type="scatter",
+                data=scatter_data,
+                title="CATE vs 协变量",
+                description=f"展示CATE随协变量{x_col}的变化，用于识别异质性来源。",
             ))
 
-        # 3. 处理组vs对照组在不同CATE分位数的分布
-        treatment_cates = cate_scores[T == 1]
-        control_cates = cate_scores[T == 0]
+        # 3. 处理效应排序（top/bottom groups）
+        sorted_idx = np.argsort(cate_pred)
+        n_groups = 5
+        group_size = len(cate_pred) // n_groups
 
-        q25, q50, q75 = np.percentile(cate_scores, [25, 50, 75])
+        group_means = []
+        for i in range(n_groups):
+            start = i * group_size
+            end = (i + 1) * group_size if i < n_groups - 1 else len(cate_pred)
+            group_means.append(float(np.mean(cate_pred[sorted_idx[start:end]])))
 
-        boxplot_data = {
-            "xAxis": {"type": "category", "data": ["处理组", "对照组"]},
-            "yAxis": {"type": "value", "name": "CATE"},
+        ranking_data = {
+            "title": {"text": "CATE分组排序"},
+            "xAxis": {"type": "category", "data": [f"第{i+1}组（低→高）" for i in range(n_groups)]},
+            "yAxis": {"type": "value", "name": "平均CATE"},
             "series": [
                 {
-                    "name": "CATE",
-                    "type": "boxplot",
-                    "data": [
-                        [float(np.min(treatment_cates)),
-                         float(np.percentile(treatment_cates, 25)),
-                         float(np.median(treatment_cates)),
-                         float(np.percentile(treatment_cates, 75)),
-                         float(np.max(treatment_cates))],
-                        [float(np.min(control_cates)),
-                         float(np.percentile(control_cates, 25)),
-                         float(np.median(control_cates)),
-                         float(np.percentile(control_cates, 75)),
-                         float(np.max(control_cates))],
-                    ],
-                    "itemStyle": {"color": "#8b5cf6"},
+                    "type": "bar",
+                    "data": [gm for gm in group_means],
+                    "itemStyle": {"color": "#10b981"},
+                    "label": {"show": True, "position": "top"},
                 },
             ],
         }
         plots.append(DiagnosticPlot(
-            name="分组CATE对比",
-            chart_type="boxplot",
-            data=boxplot_data,
-            title="处理组 vs 对照组 的CATE分布",
-            description="对比处理组和对照组的CATE分布。",
+            name="CATE分组排序",
+            chart_type="bar",
+            data=ranking_data,
+            title="CATE分组排序",
+            description="将样本按CATE排序后分组，展示不同组的平均处理效应，用于识别受益群体。",
         ))
 
         return plots
-
-    def get_cate_scores(self) -> np.ndarray:
-        """获取每个样本的CATE分数。
-
-        必须在调用fit()之后才能使用。
-
-        返回:
-            np.ndarray: 每个样本的个体化处理效应估计
-        """
-        if not self._is_fitted:
-            raise RuntimeError("必须先调用 fit() 方法")
-        return self._cate_scores

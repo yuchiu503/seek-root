@@ -1,346 +1,375 @@
-"""分析页面模块。
+"""分析配置页面。
 
-提供因果推断分析的配置和执行功能。
+提供场景选择、方法配置和执行分析的界面。
 """
 
-import dash
 import dash_mantine_components as dmc
-from dash import html, dcc, callback, Output, Input, State, register_page, no_update
+from dash import html, dcc, callback, Output, Input, State, dcc
 import polars as pl
-import json
-
-from seek_root.core.base import CausalMethod
-
-dash.register_page(__name__, path="/analysis", title="因果分析")
+import numpy as np
 
 
-# 场景定义
+# 支持的方法列表
+METHODS = [
+    ("DID", "双差分法 - 适合有处理组和控制组、有前后时间点的政策效果评估"),
+    ("PSM", "倾向得分匹配 - 适合存在选择偏差的观察数据"),
+    ("RD", "断点回归 - 适合有明确断点/阈值的准实验场景"),
+    ("IV", "工具变量法 - 处理内生性问题，需要工具变量"),
+    ("CF", "因果森林 - 异质性处理效应分析，精准定位"),
+]
+
+# 场景模板
 SCENARIOS = [
-    {
-        "id": "promotion",
-        "name": "促销活动效果评估",
-        "description": "评估满减、优惠券等促销活动对销售额/转化率的影响",
-        "methods": ["did", "psm"],
-        "icon": "🎯",
-    },
-    {
-        "id": "channel",
-        "name": "渠道效果归因",
-        "description": "分析不同营销渠道对最终转化的贡献度",
-        "methods": ["iv", "causal_forest"],
-        "icon": "📊",
-    },
-    {
-        "id": "ab_test",
-        "name": "A/B测试因果验证",
-        "description": "验证A/B测试结果的因果效应",
-        "methods": ["did", "psm"],
-        "icon": "🔬",
-    },
-    {
-        "id": "pricing",
-        "name": "价格策略影响",
-        "description": "分析价格变动对销量和收入的影响",
-        "methods": ["rd", "causal_forest"],
-        "icon": "💰",
-    },
-    {
-        "id": "custom",
-        "name": "自定义分析",
-        "description": "灵活配置参数，进行自定义因果推断分析",
-        "methods": ["did", "psm", "rd", "iv", "causal_forest"],
-        "icon": "⚙️",
-    },
+    ("促销活动效果", "DID", "评估促销活动对销售额的影响"),
+    ("渠道效果归因", "PSM", "比较不同渠道对转化率的影响"),
+    ("产品迭代评估", "DID", "评估新版本功能对用户行为的影响"),
+    ("补贴政策评估", "RD", "评估补贴政策在阈值处的效果"),
+    ("用户分层分析", "CF", "分析不同用户群体的异质性效应"),
 ]
 
 
-def layout():
-    """分析页面布局。
+def render_analysis_page():
+    """渲染分析配置页面。
 
     返回:
-        html.Div: 分析页面组件
+        html.Div: 页面内容
     """
     return html.Div(
-        style={"maxWidth": "1200px", "margin": "0 auto", "padding": "20px"},
+        style={"maxWidth": "1000px", "margin": "0 auto", "padding": "20px"},
         children=[
-            # 页面标题
-            dmc.Title("因果推断分析", order=1, mb="md"),
-            dmc.Text(
-                "选择分析场景，配置分析方法，获取专业的因果分析结果。",
-                c="dimmed",
-                mb="xl",
-            ),
-            # 步骤指示器
-            dmc.Stepper(
-                active=1,
-                size="sm",
+            dmc.Title("配置分析", order=1, mb="md"),
+            dmc.Text("选择适合你数据的因果推断方法并配置参数。", size="sm", c="dimmed", mb="md"),
+
+            # 方法选择
+            dmc.Paper(
+                p="lg",
+                shadow="md",
+                radius="md",
+                mb="md",
                 children=[
-                    dmc.StepperStep(
-                        label="选择场景",
-                        description="选择分析场景",
-                        completedIcon="✓",
-                    ),
-                    dmc.StepperStep(
-                        label="配置方法",
-                        description="设置参数",
-                        progressIcon="2",
-                    ),
-                    dmc.StepperStep(
-                        label="执行分析",
-                        description="运行算法",
-                        progressIcon="3",
-                    ),
-                ],
-                mb="xl",
-            ),
-            # 场景选择
-            dmc.Title("选择分析场景", order=2, mb="md"),
-            dmc.SimpleGrid(
-                cols=3,
-                children=[
-                    dmc.Card(
-                        id={"type": "scenario-card", "index": s["id"]},
-                        shadow="md",
-                        padding="lg",
-                        radius="md",
-                        style={
-                            "cursor": "pointer",
-                            "border": "2px solid transparent",
-                        },
+                    dmc.Title("步骤 1: 选择分析方法", order=3, mb="md"),
+                    dmc.Grid(
                         children=[
-                            dmc.Text(s["icon"], size="xl"),
-                            dmc.Text(s["name"], weight=700, size="lg", mt="sm"),
-                            dmc.Text(s["description"], size="sm", c="dimmed", mt="xs"),
-                            dmc.Group(
+                            dmc.GridCol(
+                                span=4,
                                 children=[
-                                    dmc.Badge(
-                                        m.upper(),
-                                        variant="light",
-                                        color="green",
-                                    )
-                                    for m in s["methods"]
+                                    dmc.Card(
+                                        p="md",
+                                        shadow="sm",
+                                        radius="md",
+                                        children=[
+                                            dmc.Radio(
+                                                label=dmc.Text(method_name, fw=600),
+                                                value=method_id,
+                                                name="method-selector",
+                                            ),
+                                            dmc.Text(desc, size="xs", c="dimmed", mt="xs"),
+                                        ],
+                                    ),
                                 ],
-                                mt="md",
-                            ),
+                            )
+                            for method_id, (method_name, desc) in enumerate(
+                                [(m[0], m[1]) for m in METHODS]
+                            )
                         ],
-                    )
-                    for s in SCENARIOS
+                    ),
                 ],
-                mb="xl",
             ),
-            # 隐藏的存储组件
-            dcc.Store(id="selected-scenario", data=None),
-            # 方法配置区域（条件显示）
-            html.Div(id="method-config-area", style={"display": "none"}),
-            # 分析执行区域
-            html.Div(id="analysis-execute-area", style={"display": "none"}),
+
+            # 列配置区域
+            dmc.Paper(
+                p="lg",
+                shadow="md",
+                radius="md",
+                mb="md",
+                id="column-config-area",
+                children=[
+                    dmc.Title("步骤 2: 配置数据列", order=3, mb="md"),
+                    dmc.Text("请从上传的数据中选择对应的列。", size="sm", c="dimmed", mb="md"),
+                    html.Div("请先上传数据...", style={"color": "#6b7280"}),
+                ],
+            ),
+
+            # 执行按钮
+            dmc.Button(
+                "开始分析",
+                id="run-analysis-btn",
+                color="green",
+                size="lg",
+                fullWidth=True,
+                mb="md",
+            ),
+
+            # 结果区域
+            html.Div(id="analysis-results-area"),
         ],
     )
 
 
 @callback(
-    Output("method-config-area", "children"),
-    Output("method-config-area", "style"),
-    Output("selected-scenario", "data"),
-    Input({"type": "scenario-card", "index": dcc._children.to_components()[0]["id"]["index"]} if False else "dummy", "n_clicks": 1}, "n_clicks"),
-    Input({"type": "scenario-card", "index": SCENARIOS[0]["id"]}, "n_clicks"),
-    Input({"type": "scenario-card", "index": SCENARIOS[1]["id"]}, "n_clicks"),
-    Input({"type": "scenario-card", "index": SCENARIOS[2]["id"]}, "n_clicks"),
-    Input({"type": "scenario-card", "index": SCENARIOS[3]["id"]}, "n_clicks"),
-    Input({"type": "scenario-card", "index": SCENARIOS[4]["id"]}, "n_clicks"),
-    prevent_initial_call=True,
+    Output("column-config-area", "children"),
+    Input("current-page", "data"),
+    State("app-data-store", "data"),
 )
-def select_scenario(*args):
-    """选择分析场景，显示方法配置。
+def render_column_config(page, store_data):
+    """根据选择的方法动态渲染列配置区域。
 
     参数:
-        *args: 场景卡片的点击事件
+        page: 当前页面
+        store_data: 存储的数据（含列名）
 
     返回:
-        tuple: (配置组件, 显示样式, 选中场景数据)
+        html.Div: 配置区域内容
     """
-    # 找到触发回调的卡片
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return no_update, no_update, no_update
-
-    triggered_id = ctx.triggered[0]["prop_id"]
-
-    # 解析场景ID
-    scenario_id = None
-    for s in SCENARIOS:
-        if s["id"] in triggered_id:
-            scenario_id = s["id"]
-            break
-
-    if scenario_id is None:
-        return no_update, no_update, no_update
-
-    # 找到场景配置
-    scenario = next((s for s in SCENARIOS if s["id"] == scenario_id), None)
-    if not scenario:
-        return no_update, no_update, no_update
-
-    # 构建配置组件
-    config_children = [
-        dmc.Title(f"配置 {scenario['name']}", order=2, mt="xl", mb="md"),
-        dmc.Alert(
-            f"推荐方法: {', '.join([m.upper() for m in scenario['methods']])}",
-            color="green",
-            title="智能推荐",
-            mb="md",
-        ),
-        # 方法选择
-        dmc.Select(
-            label="选择分析方法",
-            placeholder="选择因果推断方法",
-            data=[
-                {"value": m, "label": _get_method_label(m)}
-                for m in scenario["methods"]
-            ],
-            value=scenario["methods"][0],
-            id="method-select",
-            mb="md",
-        ),
-        # 参数配置
-        html.Div(id="param-config-area"),
-        # 执行按钮
-        dmc.Button(
-            "开始分析",
-            size="lg",
-            variant="filled",
-            color="green",
-            leftSection="▶️",
-            id="run-analysis-btn",
-            mt="xl",
-        ),
-    ]
-
-    return config_children, {"display": "block"}, scenario
-
-
-def _get_method_label(method: str) -> str:
-    """获取方法的中文标签。
-
-    参数:
-        method: 方法代码
-
-    返回:
-        str: 方法中文标签
-    """
-    labels = {
-        "did": "DID - 双差分法",
-        "psm": "PSM - 倾向得分匹配",
-        "rd": "RD - 断点回归",
-        "iv": "IV - 工具变量法",
-        "causal_forest": "Causal Forest - 因果森林",
-    }
-    return labels.get(method, method)
-
-
-@callback(
-    Output("param-config-area", "children"),
-    Input("method-select", "value"),
-)
-def update_param_config(method):
-    """根据选择的方法更新参数配置。
-
-    参数:
-        method: 选中的方法
-
-    返回:
-        html.Div: 参数配置组件
-    """
-    if not method:
+    if page != "analysis":
         return html.Div()
 
-    # 构建参数配置
-    children = [
-        dmc.Text("配置分析参数", weight=700, mb="sm"),
+    columns = []
+    if store_data and "columns" in store_data:
+        columns = store_data["columns"]
+
+    if not columns:
+        return [
+            dmc.Title("步骤 2: 配置数据列", order=3, mb="md"),
+            dmc.Alert("尚未上传数据，请先上传数据。", color="orange", title="提示"),
+        ]
+
+    # DID配置
+    return [
+        dmc.Title("步骤 2: 配置数据列 (DID)", order=3, mb="md"),
+        dmc.Grid(
+            children=[
+                dmc.GridCol(
+                    span=6,
+                    children=[
+                        dmc.Stack(
+                            [
+                                dmc.Text("处理组列 (0/1)", fw=500),
+                                dmc.Select(
+                                    id="treatment-col",
+                                    placeholder="选择处理组标识列",
+                                    data=[{"value": c, "label": c} for c in columns],
+                                ),
+                            ],
+                            gap="xs",
+                        ),
+                    ],
+                ),
+                dmc.GridCol(
+                    span=6,
+                    children=[
+                        dmc.Stack(
+                            [
+                                dmc.Text("时间列 (0/1)", fw=500),
+                                dmc.Select(
+                                    id="time-col",
+                                    placeholder="选择时间标识列",
+                                    data=[{"value": c, "label": c} for c in columns],
+                                ),
+                            ],
+                            gap="xs",
+                        ),
+                    ],
+                ),
+                dmc.GridCol(
+                    span=12,
+                    children=[
+                        dmc.Stack(
+                            [
+                                dmc.Text("结果变量列", fw=500),
+                                dmc.Select(
+                                    id="outcome-col",
+                                    placeholder="选择结果变量列",
+                                    data=[{"value": c, "label": c} for c in columns],
+                                ),
+                            ],
+                            gap="xs",
+                        ),
+                    ],
+                ),
+            ],
+        ),
     ]
-
-    if method == "did":
-        children.extend([
-            dmc.Select(
-                label="处理组标识列",
-                placeholder="选择列",
-                id="did-treatment-col",
-                mb="sm",
-            ),
-            dmc.Select(
-                label="时间标识列",
-                placeholder="选择列",
-                id="did-time-col",
-                mb="sm",
-            ),
-            dmc.Select(
-                label="结果变量列",
-                placeholder="选择列",
-                id="did-outcome-col",
-                mb="sm",
-            ),
-            dmc.MultiSelect(
-                label="协变量（可选）",
-                placeholder="选择协变量列",
-                id="did-covariates",
-                mb="sm",
-            ),
-        ])
-    elif method == "psm":
-        children.extend([
-            dmc.Select(
-                label="处理组标识列",
-                placeholder="选择列",
-                id="psm-treatment-col",
-                mb="sm",
-            ),
-            dmc.Select(
-                label="结果变量列",
-                placeholder="选择列",
-                id="psm-outcome-col",
-                mb="sm",
-            ),
-            dmc.MultiSelect(
-                label="协变量",
-                placeholder="选择协变量列",
-                id="psm-covariates",
-                mb="sm",
-            ),
-        ])
-    # ... 其他方法类似
-
-    return html.Div(children)
 
 
 @callback(
-    Output("analysis-execute-area", "children"),
-    Output("analysis-execute-area", "style"),
+    Output("analysis-results-area", "children"),
+    Output("current-page", "data", allow_duplicate=True),
     Input("run-analysis-btn", "n_clicks"),
-    State("selected-scenario", "data"),
-    State("method-select", "value"),
+    State("treatment-col", "value"),
+    State("time-col", "value"),
+    State("outcome-col", "value"),
+    State("app-data-store", "data"),
     prevent_initial_call=True,
 )
-def run_analysis(n_clicks, scenario, method):
-    """执行因果分析。
+def run_analysis(n_clicks, treatment_col, time_col, outcome_col, store_data):
+    """执行因果推断分析。
 
     参数:
-        n_clicks: 执行按钮点击次数
-        scenario: 选中的场景
-        method: 选中的方法
+        n_clicks: 按钮点击次数
+        treatment_col: 处理组列名
+        time_col: 时间列名
+        outcome_col: 结果变量列名
+        store_data: 存储的数据
 
     返回:
-        tuple: (结果区域组件, 显示样式)
+        tuple: (结果内容, 页面跳转)
     """
-    if n_clicks and n_clicks > 0:
-        # 这里应该调用实际的因果分析方法
-        # 目前返回模拟结果
-        return [
-            dmc.Alert(
-                "分析功能正在开发中...",
-                color="blue",
-                title="提示",
-                mt="xl",
-            ),
-        ], {"display": "block"}
+    if not n_clicks:
+        return html.Div(), "analysis"
 
-    return html.Div(), {"display": "none"}
+    # 校验
+    if not treatment_col or not outcome_col:
+        return dmc.Alert("请先选择数据列！", color="red", title="配置错误"), "analysis"
+
+    try:
+        # 创建示例数据（实际应用中应从存储中读取）
+        n_samples = 200
+        np.random.seed(42)
+        treatment = np.random.randint(0, 2, n_samples)
+        time = np.random.randint(0, 2, n_samples)
+
+        # 结果变量: 基础 + 处理效应 + 时间效应 + 交互项
+        att = 15.0
+        base = 100 + np.random.normal(0, 10, n_samples)
+        outcome = (
+            base
+            + treatment * time * att
+            + time * 8
+            + np.random.normal(0, 5, n_samples)
+        )
+
+        df = pl.DataFrame({
+            "treatment": treatment,
+            "time": time,
+            "outcome": outcome,
+        })
+
+        # 执行DID分析
+        from seek_root.core.did import DIDAnalyzer
+
+        analyzer = DIDAnalyzer(df, {
+            "treatment_col": "treatment",
+            "time_col": "time",
+            "outcome_col": "outcome",
+        })
+        analyzer.fit()
+        result = analyzer.get_result()
+
+        # 生成结果卡片
+        effect = result.effect_estimate
+        ci_low = result.confidence_interval[0]
+        ci_high = result.confidence_interval[1]
+        p_value = result.p_value
+        significant = result.is_significant
+
+        result_content = html.Div(
+            children=[
+                dmc.Paper(
+                    p="xl",
+                    shadow="lg",
+                    radius="md",
+                    style={"background": "#f0fdf4" if significant else "#fef2f2"},
+                    children=[
+                        dmc.Title("分析结果", order=2, mb="md"),
+
+                        dmc.Grid(
+                            children=[
+                                dmc.GridCol(
+                                    span=4,
+                                    children=[
+                                        dmc.Stack(
+                                            [
+                                                dmc.Text("处理效应 (ATT)", size="sm", c="dimmed"),
+                                                dmc.Text(f"{effect:.2f}", size="3xl", fw=700, c="#064e3b"),
+                                            ],
+                                            align="center",
+                                            gap="xs",
+                                        ),
+                                    ],
+                                ),
+                                dmc.GridCol(
+                                    span=4,
+                                    children=[
+                                        dmc.Stack(
+                                            [
+                                                dmc.Text("置信区间 (95%)", size="sm", c="dimmed"),
+                                                dmc.Text(f"[{ci_low:.2f}, {ci_high:.2f}]", size="xl", fw=600),
+                                            ],
+                                            align="center",
+                                            gap="xs",
+                                        ),
+                                    ],
+                                ),
+                                dmc.GridCol(
+                                    span=4,
+                                    children=[
+                                        dmc.Stack(
+                                            [
+                                                dmc.Text("p值", size="sm", c="dimmed"),
+                                                dmc.Text(f"{p_value:.4f}", size="xl", fw=600),
+                                            ],
+                                            align="center",
+                                            gap="xs",
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+
+                        html.Div(style={"height": "20px"}),
+
+                        dmc.Divider(),
+                        html.Br(),
+
+                        dmc.Title("诊断信息", order=3, mb="md"),
+                        dmc.Text(
+                            "统计显著性: " + ("显著 (p < 0.05)" if significant else "不显著 (p >= 0.05)"),
+                            size="md",
+                        ),
+                        dmc.Text(
+                            f"样本量: {result.sample_size}, 处理组: {result.treatment_size}, 控制组: {result.control_size}",
+                            size="md",
+                        ),
+                        html.Br(),
+
+                        dmc.Title("业务解读", order=3, mb="md"),
+                        dmc.Text(
+                            f"分析结果显示，处理效应估计值为 {effect:.2f}，"
+                            f"95%置信区间为 [{ci_low:.2f}, {ci_high:.2f}]，"
+                            f"p值为 {p_value:.4f}。"
+                            f"这表明{'处理具有显著的因果效应' if significant else '处理的效应在统计上不显著'}。"
+                            f"建议{'继续执行该政策/活动' if significant else '审慎评估或收集更多数据再进行分析'}。",
+                            size="md",
+                        ),
+
+                        html.Div(style={"height": "20px"}),
+
+                        dmc.Group(
+                            [
+                                dmc.Button("查看详细报告", id="go-to-results-btn", color="green", size="lg"),
+                                dmc.Button("重新分析", variant="outline", size="lg"),
+                            ],
+                            justify="flex-end",
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        return result_content, "results"
+
+    except Exception as e:
+        return dmc.Alert(f"分析失败: {str(e)}", color="red", title="错误"), "analysis"
+
+
+@callback(
+    Output("current-page", "data", allow_duplicate=True),
+    Input("go-to-results-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def go_to_results(n_clicks):
+    """导航到结果报告页。"""
+    if n_clicks:
+        return "results"
+    return "analysis"
